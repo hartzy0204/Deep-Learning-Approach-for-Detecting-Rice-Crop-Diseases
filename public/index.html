@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rice Disease Detection</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding: 40px 20px; }
+  .container { max-width: 900px; width: 100%; background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); padding: 32px; }
+  h1 { font-size: 24px; margin-bottom: 8px; }
+  .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
+  label { font-weight: 600; display: block; margin-bottom: 8px; }
+  input[type=file] { display: block; margin-bottom: 16px; }
+  button { background: #2563eb; color: white; border: none; padding: 10px 24px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #93c5fd; cursor: not-allowed; }
+  .image-section { display: flex; gap: 24px; margin-top: 24px; flex-wrap: wrap; }
+  .image-section > div { flex: 1; min-width: 300px; }
+  .canvas-wrap { position: relative; display: inline-block; width: 100%; }
+  .canvas-wrap canvas, .canvas-wrap img { max-width: 100%; border-radius: 8px; border: 1px solid #e5e7eb; }
+  .canvas-wrap canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  h3 { font-size: 16px; margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e5e7eb; font-size: 14px; }
+  th { background: #f9fafb; font-weight: 600; }
+  .status { margin-top: 16px; padding: 12px; border-radius: 6px; display: none; }
+  .status.loading { display: block; background: #eff6ff; color: #1e40af; }
+  .status.error { display: block; background: #fef2f2; color: #991b1b; }
+  .legend { display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
+  #jsonOut { background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:12px; font-size:13px; overflow:auto; white-space:pre-wrap; word-break:break-word; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Rice Disease Detection</h1>
+  <p class="subtitle">Upload a rice leaf image to detect diseases using YOLOv5</p>
+
+  <div class="controls">
+    <label for="imageInput" style="margin:0">Select image</label>
+    <input type="file" id="imageInput" accept="image/*" style="margin:0">
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="image-section">
+    <div>
+      <h3>Detection Result</h3>
+      <div class="canvas-wrap" id="resultWrap" style="display:none">
+        <img id="original" style="display:none">
+        <canvas id="detectionCanvas"></canvas>
+      </div>
+      <div id="legend" class="legend" style="display:none"></div>
+      <pre id="jsonOut">Upload an image to detect diseases.</pre>
+    </div>
+  </div>
+
+  <div id="allDetections" style="display:none">
+    <h3>All Detections</h3>
+    <table>
+      <thead><tr><th>Label</th><th>Confidence</th><th>Box</th></tr></thead>
+      <tbody id="detsBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const imgInput = document.getElementById('imageInput');
+const origImg = document.getElementById('original');
+const statusEl = document.getElementById('status');
+const jsonOut = document.getElementById('jsonOut');
+const canvas = document.getElementById('detectionCanvas');
+const resultWrap = document.getElementById('resultWrap');
+const detsBody = document.getElementById('detsBody');
+const allDets = document.getElementById('allDetections');
+const legendEl = document.getElementById('legend');
+
+let originalImageDataUrl = '';
+const BASE_COLORS = ['#dc2626', '#2563eb', '#16a34a', '#ca8a04', '#7c3aed', '#0891b2', '#be123c', '#4f46e5'];
+
+imgInput.addEventListener('change', () => {
+  const file = imgInput.files[0];
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = async e => {
+      originalImageDataUrl = e.target.result;
+      origImg.src = originalImageDataUrl;
+      origImg.style.display = 'block';
+      resultWrap.style.display = 'block';
+      await runDetection(file);
+    };
+    reader.readAsDataURL(file);
+  }
+});
+
+async function runDetection(file) {
+  setStatus('Detecting diseases...', 'loading');
+
+  const formData = new FormData();
+  formData.append('image', file);
+
+  try {
+    const res = await fetch('/predict', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showResults(data);
+    setStatus('', '');
+  } catch (err) {
+    setStatus('Error: ' + err.message, 'error');
+  }
+}
+
+function setStatus(msg, type) {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + type;
+}
+
+function showResults(data) {
+  const dets = data.detections || [];
+
+  if (dets.length === 0) {
+    jsonOut.textContent = 'No detections found';
+    allDets.style.display = 'none';
+    legendEl.style.display = 'none';
+    drawDetections([]);
+    return;
+  }
+
+  const sorted = [...dets].sort((a, b) => b.confidence - a.confidence);
+  jsonOut.textContent = JSON.stringify(sorted, null, 2);
+
+  buildLegend(sorted);
+  drawDetections(sorted);
+
+  detsBody.innerHTML = '';
+  for (const d of sorted) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${d.label}</td><td>${(d.confidence * 100).toFixed(1)}%</td><td>(${d.x1},${d.y1})-(${d.x2},${d.y2})</td>`;
+    detsBody.appendChild(tr);
+  }
+  allDets.style.display = 'block';
+}
+
+function buildLegend(dets) {
+  const seen = {};
+  const entries = [];
+  for (const d of dets) {
+    if (!seen[d.label]) {
+      seen[d.label] = true;
+      entries.push(d.label);
+    }
+  }
+  const colorMap = {};
+  entries.forEach((label, i) => { colorMap[label] = BASE_COLORS[i % BASE_COLORS.length]; });
+  window._colorMap = colorMap;
+
+  legendEl.innerHTML = entries.map(label =>
+    `<div class="legend-item"><span class="legend-swatch" style="background:${colorMap[label]}"></span>${label}</div>`
+  ).join('');
+  legendEl.style.display = 'flex';
+}
+
+function drawDetections(dets) {
+  const img = new Image();
+  img.onload = () => {
+    const cw = img.naturalWidth;
+    const ch = img.naturalHeight;
+
+    canvas.width = cw;
+    canvas.height = ch;
+
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+
+    const colorMap = window._colorMap || {};
+    ctx.lineWidth = Math.max(2, cw / 200);
+    const fontSize = Math.max(14, cw / 30);
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    const pad = 4;
+    const labelH = fontSize + pad * 2;
+
+    for (const det of dets) {
+      const color = colorMap[det.label] || BASE_COLORS[0];
+
+      let x = Math.max(0, det.x1);
+      let y = Math.max(0, det.y1);
+      let w = Math.min(cw - x, det.x2 - det.x1);
+      let h = Math.min(ch - y, det.y2 - det.y1);
+      if (w <= 0 || h <= 0) continue;
+
+      ctx.strokeStyle = color;
+      ctx.strokeRect(x, y, w, h);
+
+      const label = `${det.label} ${(det.confidence * 100).toFixed(1)}%`;
+      const metrics = ctx.measureText(label);
+      const labelY = y - labelH >= 0 ? y - labelH : y;
+
+      ctx.fillStyle = color;
+      ctx.fillRect(x, labelY, metrics.width + pad * 2, labelH);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, x + pad, labelY + labelH - pad);
+    }
+  };
+  img.src = originalImageDataUrl;
+}
+</script>
+</body>
+</html>
