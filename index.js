@@ -229,11 +229,17 @@ async function preprocessImage(imageBuffer) {
   return { pixelData, originalWidth: ow, originalHeight: oh, scale, padX, padY };
 }
 
+async function ensureModel() {
+  if (!modelRunner) {
+    await loadModel();
+  }
+}
+
 app.post('/predict', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image file provided' });
-  if (!modelRunner) return res.status(503).json({ error: 'Model not loaded' });
 
   try {
+    await ensureModel();
     const { pixelData, originalWidth, originalHeight, scale, padX, padY } = await preprocessImage(req.file.buffer);
     const inputs = modelRunner.cppRunner.GetInputs();
     const inputTensor = inputs.get(0);
@@ -295,4 +301,8 @@ async function start() {
   }
 }
 
-start();
+if (process.env.VERCEL !== '1') {
+  start();
+}
+
+module.exports = app;
